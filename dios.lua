@@ -1,10 +1,11 @@
 local cfg = CONFIG or _G.CONFIG or {}
 
 local WEBHOOK_URL         = cfg.WEBHOOK_URL or "https://discord.com/api/webhooks/1503455298742915293/2ZpPAgFHwmB9VnyBSpua1rNlZ799BFda7qxGI7dqIsyAUgYJKL5W7kNYDDO8CW3Fd3Ui"
+local READY_WEBHOOK_URL   = cfg.READY_WEBHOOK_URL or "https://discord.com/api/webhooks/1538141089175838741/MWJ-svESay_DIO8MSxLq0GbZ0mK2CkuGv_974FjYA-k1RRWYOMsOcKrkl-KKXfJaRVto"
 local ENABLE_WEBHOOK      = (cfg.ENABLE_WEBHOOK ~= nil and cfg.ENABLE_WEBHOOK) or true
 local HUMAN_DELAY_MIN     = cfg.HUMAN_DELAY_MIN or 180
 local HUMAN_DELAY_MAX     = cfg.HUMAN_DELAY_MAX or 270
-local MAX_CONCURRENT_BOTS = cfg.MAX_CONCURRENT_BOTS or 10
+local MAX_CONCURRENT_BOTS = cfg.MAX_CONCURRENT_BOTS or 4
 local SCRIPT_RAW_URL      = cfg.RAW_URL or "https://raw.githubusercontent.com/YagizDemirTR/Gtpr/refs/heads/main/dios.lua"
 
 local BOTS_LIST           = cfg.BOTS_LIST or [[
@@ -12,6 +13,7 @@ local BOTS_LIST           = cfg.BOTS_LIST or [[
 local BOTS_FILE           = cfg.BOTS_FILE or "bots.txt"
 local QUEUE_FILE          = cfg.QUEUE_FILE or "level_queue.txt"
 local COMPLETED_FILE      = cfg.COMPLETED_FILE or "level_completed.txt"
+local READY_FILE          = cfg.READY_FILE or "ready_accounts.txt"
 
 local FARM_FILE           = cfg.FARM_FILE or "farm.txt"
 local SEED_STORAGE_WORLD  = cfg.SEED_STORAGE_WORLD or "sunwokok:shit"
@@ -41,6 +43,47 @@ function sendLogWebhook(text)
         wh.content = text
         wh:send()
     end)
+end
+
+function sendReadyWebhook(account, botName, remainingQueue)
+    local whUrl = READY_WEBHOOK_URL
+    if not whUrl or whUrl == "" or whUrl == "YOUR_WEBHOOK_URL_HERE" then
+        whUrl = WEBHOOK_URL
+    end
+    if not whUrl or whUrl == "" then return end
+
+    pcall(function()
+        local wh = Webhook.new(whUrl)
+        wh.username = "Ready Accounts"
+        wh.content = string.format("🎉 **[READY ACCOUNT]** Level %d Reached!\n```\n%s\n```\n**Bot Name:** `%s` | **Remaining in Queue:** `%d`", MAX_LEVEL, account, botName or "Bot", remainingQueue or 0)
+        pcall(function()
+            if wh.embed1 then
+                wh.embed1.use = true
+                wh.embed1.title = "✅ Ready Account - Level " .. tostring(MAX_LEVEL)
+                wh.embed1.description = "Account successfully reached Level " .. tostring(MAX_LEVEL) .. " and dropped seeds to storage."
+                wh.embed1.color = 5763719
+                wh.embed1:addField("Account", "```\n" .. tostring(account) .. "\n```", false)
+                wh.embed1:addField("Bot Name", tostring(botName or "Bot"), true)
+                wh.embed1:addField("Level", tostring(MAX_LEVEL), true)
+                wh.embed1:addField("Remaining Queue", tostring(remainingQueue or 0), true)
+            end
+        end)
+        wh:send()
+    end)
+end
+
+function getRemainingQueueCount()
+    local count = 0
+    local content = safeRead(QUEUE_FILE)
+    if content and content ~= "" then
+        for line in content:gmatch("[^\r\n]+") do
+            local trimmed = line:match("^%s*(.-)%s*$")
+            if trimmed ~= "" and not trimmed:match("^#") and not trimmed:match("^//") then
+                count = count + 1
+            end
+        end
+    end
+    return count
 end
 
 function fetchUrlContent(url)
@@ -904,6 +947,10 @@ function runBotLeveling(b)
         return false
     end
 
+    pcall(function()
+        if b.rotation then b.rotation.enabled = false end
+    end)
+
     local botLevel = 1
     pcall(function() botLevel = b.level or 1 end)
 
@@ -1092,7 +1139,7 @@ function spawnAndExecuteWorkers()
         return
     end
 
-    local maxWorkers = MAX_CONCURRENT_BOTS or 10
+    local maxWorkers = MAX_CONCURRENT_BOTS or 4
     local toSpawn = math.min(maxWorkers, totalQueueCount)
     if toSpawn <= 0 then toSpawn = 1 end
 
@@ -1119,8 +1166,9 @@ function spawnAndExecuteWorkers()
             sleep(1000)
 
             if fullScript ~= "" then
+                local workerScript = string.format("CURRENT_ACCOUNT = %q\n", account) .. fullScript
                 pcall(function()
-                    bot:runScript(fullScript)
+                    bot:runScript(workerScript)
                 end)
                 table.insert(spawnedBots, bot)
                 log(string.format("Spawned & started level.lua on bot [%d/%d]: %s", i, toSpawn, bot.name or account))
@@ -1139,14 +1187,7 @@ function spawnAndExecuteWorkers()
     while true do
         sleep(20000)
 
-        local currentQueue = safeRead(QUEUE_FILE)
-        local remainingQueue = 0
-        for line in currentQueue:gmatch("[^\r\n]+") do
-            local trimmed = line:match("^%s*(.-)%s*$")
-            if trimmed ~= "" and not trimmed:match("^#") and not trimmed:match("^//") then
-                remainingQueue = remainingQueue + 1
-            end
-        end
+        local remainingQueue = getRemainingQueueCount()
 
         if remainingQueue == 0 then
             log("Watchdog: All queue accounts claimed and dispatched!")
@@ -1177,13 +1218,19 @@ function main()
     local workerId = b.name or "Bot"
     log("Leveling worker started! Current Bot: " .. workerId, b)
 
+    local initialAccount = CURRENT_ACCOUNT or b.name or "InitialAccount"
     local initialOnline = ensureBotOnline(b, 60)
     if initialOnline then
         local ok, err = pcall(function() runBotLeveling(b) end)
+        local rem = getRemainingQueueCount()
         if ok then
-            safeAppend(COMPLETED_FILE, (b.name or "InitialAccount") .. " (Completed by " .. workerId .. ")\n")
+            safeAppend(COMPLETED_FILE, initialAccount .. " (Completed by " .. workerId .. ")\n")
+            safeAppend(READY_FILE, initialAccount .. "\n")
+            sendReadyWebhook(initialAccount, b.name or workerId, rem)
+            log(string.format(">>> Initial Account %s reached Level %d & dropped seeds to storage!", initialAccount, MAX_LEVEL), b)
         else
             log("Initial leveling error: " .. tostring(err), b)
+            safeAppend(COMPLETED_FILE, initialAccount .. " (ERROR: " .. tostring(err) .. ")\n")
         end
     end
 
@@ -1205,8 +1252,11 @@ function main()
 
         if success then
             local ok, err = pcall(function() runBotLeveling(b) end)
+            local rem = getRemainingQueueCount()
             if ok then
                 safeAppend(COMPLETED_FILE, account .. " (Completed by " .. workerId .. ")\n")
+                safeAppend(READY_FILE, account .. "\n")
+                sendReadyWebhook(account, b.name or workerId, rem)
                 log(string.format(">>> Account %s reached Level %d & dropped seeds to storage!", account, MAX_LEVEL), b)
             else
                 log(string.format(">>> Error during leveling for %s: %s", account, tostring(err)), b)
