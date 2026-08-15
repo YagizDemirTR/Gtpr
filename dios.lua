@@ -909,36 +909,40 @@ function runBotLeveling(b)
 
     if botLevel < 7 then
         sleep(2500)
-        if findItem(b, 9640) == 0 then
-            log("Bot does not have 9640 in inventory. Skipping /home warp.", b)
-        else
-            log("Warping home (/home) to start tutorial...", b)
-            pcall(function() b:say("/home") end)
-            sleep(4000)
+
+        local item9640Count = 0
+        for w = 1, 10 do
+            item9640Count = findItem(b, 9640)
+            if item9640Count > 0 then break end
+            sleep(1000)
         end
 
-        local x, y = getLockTile(b)
+        if item9640Count > 0 then
+            log("Lock 9640 detected in inventory (" .. item9640Count .. "). Warping /home to start tutorial...", b)
+            pcall(function() b:say("/home") end)
+            sleep(4000)
 
-        if not x then
-            if findItem(b, 9640) > 0 then
+            local x, y = getLockTile(b)
+
+            if not x then
                 local bx, by = getBotPos(b)
-                pcall(function() b:place(bx, by - 1, 9640) end)
-                sleep(1500)
-
-                x, y = getLockTile(b)
-
-                if x then
-                    log("9640 placed at " .. x .. "," .. y, b)
-                    wrenchWl(b, x, y)
-                else
-                    log("Failed to detect placed 9640", b)
+                if bx ~= -1 and by ~= -1 then
+                    pcall(function() b:place(bx, by - 1, 9640) end)
+                    sleep(1500)
+                    x, y = getLockTile(b)
+                    if x then
+                        log("9640 placed at " .. x .. "," .. y, b)
+                        wrenchWl(b, x, y)
+                    else
+                        log("Failed to detect placed 9640", b)
+                    end
                 end
             else
-                log("9640 not found in inventory", b)
+                log("9640 already at " .. x .. "," .. y, b)
+                wrenchWl(b, x, y)
             end
         else
-            log("9640 already at " .. x .. "," .. y, b)
-            wrenchWl(b, x, y)
+            log("Lock 9640 not found in inventory. Proceeding with tutorial clear...", b)
         end
 
         local res = clearSingleWorld(b)
@@ -1094,6 +1098,8 @@ function spawnAndExecuteWorkers()
 
     log(string.format("No active bot found! Auto-spawning %d bot(s) into Lucifer...", toSpawn))
 
+    local spawnedBots = {}
+
     for i = 1, toSpawn do
         local account, remaining = claimNextAccount("AutoSpawner")
         if not account then break end
@@ -1116,6 +1122,7 @@ function spawnAndExecuteWorkers()
                 pcall(function()
                     bot:runScript(fullScript)
                 end)
+                table.insert(spawnedBots, bot)
                 log(string.format("Spawned & started level.lua on bot [%d/%d]: %s", i, toSpawn, bot.name or account))
             else
                 log(string.format("Spawned bot [%d/%d]: %s (level.lua script content is empty)", i, toSpawn, bot.name or account))
@@ -1127,7 +1134,34 @@ function spawnAndExecuteWorkers()
         sleep(1500)
     end
 
-    log("Auto-spawner completed launching all bot workers!")
+    log(string.format("Auto-spawner launched %d bot workers! Watchdog active.", #spawnedBots))
+
+    while true do
+        sleep(20000)
+
+        local currentQueue = safeRead(QUEUE_FILE)
+        local remainingQueue = 0
+        for line in currentQueue:gmatch("[^\r\n]+") do
+            local trimmed = line:match("^%s*(.-)%s*$")
+            if trimmed ~= "" and not trimmed:match("^#") and not trimmed:match("^//") then
+                remainingQueue = remainingQueue + 1
+            end
+        end
+
+        if remainingQueue == 0 then
+            log("Watchdog: All queue accounts claimed and dispatched!")
+            break
+        end
+
+        for _, w in ipairs(spawnedBots) do
+            pcall(function()
+                if w and w.status == BotStatus.offline then
+                    log("Watchdog: Reconnecting offline worker: " .. (w.name or "bot"))
+                    w:connect()
+                end
+            end)
+        end
+    end
 end
 
 function main()
@@ -1145,8 +1179,12 @@ function main()
 
     local initialOnline = ensureBotOnline(b, 60)
     if initialOnline then
-        runBotLeveling(b)
-        safeAppend(COMPLETED_FILE, (b.name or "InitialAccount") .. " (Completed by " .. workerId .. ")\n")
+        local ok, err = pcall(function() runBotLeveling(b) end)
+        if ok then
+            safeAppend(COMPLETED_FILE, (b.name or "InitialAccount") .. " (Completed by " .. workerId .. ")\n")
+        else
+            log("Initial leveling error: " .. tostring(err), b)
+        end
     end
 
     while true do
@@ -1166,9 +1204,14 @@ function main()
         local success = switchBotAccount(b, account)
 
         if success then
-            runBotLeveling(b)
-            safeAppend(COMPLETED_FILE, account .. " (Completed by " .. workerId .. ")\n")
-            log(string.format(">>> Account %s reached Level %d & dropped seeds to storage!", account, MAX_LEVEL), b)
+            local ok, err = pcall(function() runBotLeveling(b) end)
+            if ok then
+                safeAppend(COMPLETED_FILE, account .. " (Completed by " .. workerId .. ")\n")
+                log(string.format(">>> Account %s reached Level %d & dropped seeds to storage!", account, MAX_LEVEL), b)
+            else
+                log(string.format(">>> Error during leveling for %s: %s", account, tostring(err)), b)
+                safeAppend(COMPLETED_FILE, account .. " (ERROR: " .. tostring(err) .. ")\n")
+            end
         else
             log(string.format(">>> Account %s failed or banned (%s). Moving to next account...", account, getBotStatusString(b.status)), b)
             safeAppend(COMPLETED_FILE, account .. " (FAILED: " .. getBotStatusString(b.status) .. ")\n")
