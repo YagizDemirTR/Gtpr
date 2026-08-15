@@ -5,7 +5,7 @@ local ENABLE_WEBHOOK      = (cfg.ENABLE_WEBHOOK ~= nil and cfg.ENABLE_WEBHOOK) o
 local HUMAN_DELAY_MIN     = cfg.HUMAN_DELAY_MIN or 180
 local HUMAN_DELAY_MAX     = cfg.HUMAN_DELAY_MAX or 270
 local MAX_CONCURRENT_BOTS = cfg.MAX_CONCURRENT_BOTS or 10
-local SCRIPT_RAW_URL      = cfg.RAW_URL or ""
+local SCRIPT_RAW_URL      = cfg.RAW_URL or "https://raw.githubusercontent.com/YagizDemirTR/Gtpr/refs/heads/main/dios.lua"
 
 local BOTS_LIST           = cfg.BOTS_LIST or [[
 ]]
@@ -938,6 +938,67 @@ function serializeConfig(tbl)
     return s
 end
 
+function createBotInstance(account)
+    local payload = parseAccountPayload(account)
+    local bot = nil
+
+    if payload then
+        pcall(function() bot = addBot(payload) end)
+    end
+
+    if not bot then
+        pcall(function()
+            bot = addBot({
+                name = account,
+                platform = (Platform and Platform.windows) or 0,
+                connect = false
+            })
+        end)
+    end
+
+    if not bot then
+        pcall(function()
+            bot = addBot({
+                name = account,
+                connect = false
+            })
+        end)
+    end
+
+    if not bot then
+        local u, p = account:match("^([^:|]+)[:|](.+)$")
+        if u and p then
+            pcall(function()
+                if Platform and Platform.windows then
+                    bot = addBot(u, p, "", "", Platform.windows)
+                else
+                    bot = addBot(u, p)
+                end
+            end)
+        else
+            pcall(function()
+                if Platform and Platform.windows then
+                    bot = addBot(account, "", "", "", Platform.windows)
+                else
+                    bot = addBot(account)
+                end
+            end)
+            if not bot then
+                pcall(function() bot = addBot(account) end)
+            end
+        end
+    end
+
+    if not bot then
+        pcall(function() bot = getBot(account) end)
+    end
+    if not bot then
+        pcall(function() bot = getBot() end)
+    end
+
+    return bot
+end
+
 function spawnAndExecuteWorkers()
     local scriptContent = getScriptSource()
     local fullScript = scriptContent
@@ -969,23 +1030,7 @@ function spawnAndExecuteWorkers()
         local account, remaining = claimNextAccount("AutoSpawner")
         if not account then break end
 
-        local payload = parseAccountPayload(account)
-        local bot = nil
-
-        if payload then
-            pcall(function() bot = addBot(payload) end)
-        else
-            local u, p = account:match("^([^:|]+)[:|](.+)$")
-            if u and p then
-                pcall(function() bot = addBot(u, p) end)
-            else
-                pcall(function() bot = addBot(account) end)
-            end
-        end
-
-        if not bot then
-            pcall(function() bot = getBot(account) end)
-        end
+        local bot = createBotInstance(account)
 
         if bot then
             pcall(function()
