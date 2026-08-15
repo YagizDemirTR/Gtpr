@@ -162,23 +162,23 @@ function getBotStatusString(status)
     return tostring(status)
 end
 
-function ensureBotOnline(b, maxWaitSeconds)
+function ensureBotOnline(b)
     if not b then return false end
-    maxWaitSeconds = maxWaitSeconds or 60
     local lastStatus = nil
+    local secondsWaited = 0
 
-    for second = 1, maxWaitSeconds do
+    while true do
         local currentStatus = nil
         pcall(function() currentStatus = b.status end)
 
         if currentStatus ~= lastStatus then
             lastStatus = currentStatus
             local statusName = getBotStatusString(currentStatus)
-            log(string.format("Waiting for bot to be Online... Status: %s (%d/%ds)", statusName, second, maxWaitSeconds), b)
+            log(string.format("Waiting for bot to be Online... Status: %s (%ds elapsed)", statusName, secondsWaited), b)
         end
 
         if currentStatus == BotStatus.online then
-            sleep(2000)
+            sleep(1500)
             return true
         end
 
@@ -191,16 +191,13 @@ function ensureBotOnline(b, maxWaitSeconds)
             return false
         end
 
-        if second % 15 == 0 and currentStatus == BotStatus.offline then
+        if secondsWaited > 0 and secondsWaited % 15 == 0 and currentStatus ~= BotStatus.online then
             pcall(function() b:connect() end)
         end
 
         sleep(1000)
+        secondsWaited = secondsWaited + 1
     end
-
-    local isOnline = false
-    pcall(function() isOnline = (b.status == BotStatus.online) end)
-    return isOnline
 end
 
 function findItem(b, id)
@@ -459,8 +456,18 @@ function clearSingleWorld(b)
 end
 
 function clearUntilLevel7(b)
+    local offlineFails = 0
     while true do
-        if not ensureBotOnline(b, 30) then break end
+        if not ensureBotOnline(b, 45) then
+            offlineFails = offlineFails + 1
+            if offlineFails >= 3 then
+                log("Bot failed to stay online multiple times during tutorial. Breaking tutorial loop.", b)
+                break
+            end
+            sleep(3000)
+        else
+            offlineFails = 0
+        end
 
         local botLevel = 1
         pcall(function() botLevel = b.level or 1 end)
@@ -474,7 +481,7 @@ function clearUntilLevel7(b)
             local lvl = 1
             pcall(function() lvl = b.level or 1 end)
             if lvl < 7 then
-                if ensureBotOnline(b, 30) then
+                if ensureBotOnline(b, 45) then
                     local newWorld = generateRandomWorld()
                     log("Warping to new random world: " .. newWorld, b)
                     pcall(function() b:warp(newWorld) end)
@@ -710,6 +717,7 @@ function startNativeRotationFarm(b)
 
     log("Monitoring bot level... (Bot will drop seeds to storage and switch account at Level 12)", b)
 
+    local offlineTimer = 0
     while true do
         sleep(5000)
 
@@ -730,26 +738,37 @@ function startNativeRotationFarm(b)
             break
         else
             local isBanned = false
+            local curStatus = nil
             pcall(function()
-                if b.status == BotStatus.account_banned or b.status == BotStatus.location_banned or b.status == BotStatus.account_restricted then
+                curStatus = b.status
+                if curStatus == BotStatus.account_banned or
+                   curStatus == BotStatus.location_banned or
+                   curStatus == BotStatus.wrong_password or
+                   curStatus == BotStatus.account_restricted or
+                   curStatus == BotStatus.invalid_account then
                     isBanned = true
                 end
             end)
 
             if isBanned then
-                log("Bot detected as banned (" .. getBotStatusString(b.status) .. ") during rotation.", b)
+                log("Bot detected as banned/invalid (" .. getBotStatusString(curStatus) .. ") during rotation.", b)
                 break
             end
 
-            pcall(function()
-                if b.status ~= BotStatus.online then
-                    b:connect()
-                    sleep(2000)
+            if curStatus ~= BotStatus.online then
+                offlineTimer = offlineTimer + 5
+                if offlineTimer % 15 == 0 then
+                    log(string.format("Bot offline during rotation (%s). Reconnecting... (%ds elapsed)", getBotStatusString(curStatus), offlineTimer), b)
+                    pcall(function() b:connect() end)
                 end
-                if b.rotation and not b.rotation.enabled then
-                    b.rotation.enabled = true
-                end
-            end)
+            else
+                offlineTimer = 0
+                pcall(function()
+                    if b.rotation and not b.rotation.enabled then
+                        b.rotation.enabled = true
+                    end
+                end)
+            end
         end
     end
 end
@@ -827,31 +846,75 @@ function parseAccountPayload(accountLine)
         platformID = Platform.windows
     end
 
-    local email, sisa = accountLine:match("([^|]+)|(.+)")
-    if email and sisa then
-        local mac, rid, wk, ltoken = sisa:match("([^:]+):([^:]+):([^:]+):(.+)")
-        if mac and rid and wk and ltoken then
+    -- 1. Key:Value format (e.g., mac:...|wk:...|platform:...|rid:...|name:...|token:... or tokens)
+    if accountLine:find(":") and (accountLine:find("token:") or accountLine:find("name:") or (accountLine:find("mac:") and accountLine:find("rid:"))) then
+        local kvBot = {}
+        local count = 0
+        for key_value in accountLine:gmatch("[^|]+") do
+            local key, value = key_value:match("^([^:]+):(.+)$")
+            if key and value then
+                kvBot[key] = value
+                count = count + 1
+            end
+        end
+
+        if count >= 2 and (kvBot.token or kvBot.name or (kvBot.mac and kvBot.rid)) then
+            if kvBot.token and not kvBot.name then
+                kvBot.name = kvBot.token
+            end
+            if kvBot.token and not kvBot.mail then
+                kvBot.mail = kvBot.token .. "@cid"
+            end
+            if kvBot.platform then
+                kvBot.platform = tonumber(kvBot.platform) or platformID
+            else
+                kvBot.platform = platformID
+            end
+            return kvBot
+        end
+    end
+
+    -- 2. 5-part pipe format: list_surat (email|token|mac|rid|wk)
+    local email, token, mac, rid, wk = accountLine:match("^([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)$")
+    if email and token and mac and rid and wk then
+        return {
+            ["display"]  = email,
+            ["secret"]   = email,
+            ["name"]     = token,
+            ["mac"]      = mac,
+            ["rid"]      = rid,
+            ["wk"]       = wk,
+            ["platform"] = platformID,
+        }
+    end
+
+    -- 3. email|mac:rid:wk:ltoken
+    local email2, sisa = accountLine:match("^([^|]+)|(.+)$")
+    if email2 and sisa then
+        local m, r, w, l = sisa:match("([^:]+):([^:]+):([^:]+):(.+)")
+        if m and r and w and l then
             return {
-                ["display"]  = email,
-                ["secret"]   = email,
-                ["name"]     = ltoken,
-                ["rid"]      = rid,
-                ["mac"]      = mac,
-                ["wk"]       = wk,
+                ["display"]  = email2,
+                ["secret"]   = email2,
+                ["name"]     = l,
+                ["rid"]      = r,
+                ["mac"]      = m,
+                ["wk"]       = w,
                 ["platform"] = platformID,
             }
         end
-    else
-        local mac, rid, wk, ltoken = accountLine:match("([^:]+):([^:]+):([^:]+):(.+)")
-        if mac and rid and wk and ltoken then
-            return {
-                ["name"]     = ltoken,
-                ["rid"]      = rid,
-                ["mac"]      = mac,
-                ["wk"]       = wk,
-                ["platform"] = platformID,
-            }
-        end
+    end
+
+    -- 4. mac:rid:wk:ltoken (4 colon-separated fields)
+    local m, r, w, l = accountLine:match("^([^:]+):([^:]+):([^:]+):(.+)$")
+    if m and r and w and l then
+        return {
+            ["name"]     = l,
+            ["rid"]      = r,
+            ["mac"]      = m,
+            ["wk"]       = w,
+            ["platform"] = platformID,
+        }
     end
 
     return nil
@@ -898,11 +961,12 @@ function switchBotAccount(b, accountLine)
     log("Connecting with updated credentials...", b)
     pcall(function() b:connect() end)
 
-    local maxWaitSeconds = 60
     local lastStatus = nil
+    local secondsWaited = 0
 
-    for second = 1, maxWaitSeconds do
+    while true do
         sleep(1000)
+        secondsWaited = secondsWaited + 1
 
         local currentStatus = nil
         pcall(function() currentStatus = b.status end)
@@ -910,7 +974,7 @@ function switchBotAccount(b, accountLine)
         if currentStatus ~= lastStatus then
             lastStatus = currentStatus
             local statusName = getBotStatusString(currentStatus)
-            log(string.format("Status: %s (waiting %d/%ds)...", statusName, second, maxWaitSeconds), b)
+            log(string.format("Status: %s (waiting %ds)...", statusName, secondsWaited), b)
         end
 
         if currentStatus == BotStatus.online then
@@ -927,22 +991,15 @@ function switchBotAccount(b, accountLine)
             return false
         end
 
-        if second % 15 == 0 and currentStatus == BotStatus.offline then
-            log("Still offline, retrying connect...", b)
+        if secondsWaited > 0 and secondsWaited % 15 == 0 and currentStatus ~= BotStatus.online then
+            log(string.format("Still not online (%s), retrying connect...", getBotStatusString(currentStatus)), b)
             pcall(function() b:connect() end)
         end
-    end
-
-    if b.status == BotStatus.online then
-        return true
-    else
-        log("Connection timeout (60s). Final status: " .. getBotStatusString(b.status), b)
-        return false
     end
 end
 
 function runBotLeveling(b)
-    if not ensureBotOnline(b, 60) then
+    if not ensureBotOnline(b) then
         log("Bot is offline or not connected. Skipping leveling.", b)
         return false
     end
@@ -1196,9 +1253,16 @@ function spawnAndExecuteWorkers()
 
         for _, w in ipairs(spawnedBots) do
             pcall(function()
-                if w and w.status == BotStatus.offline then
-                    log("Watchdog: Reconnecting offline worker: " .. (w.name or "bot"))
-                    w:connect()
+                if w and w.status ~= BotStatus.online then
+                    local isBanned = (w.status == BotStatus.account_banned or
+                                      w.status == BotStatus.location_banned or
+                                      w.status == BotStatus.account_restricted or
+                                      w.status == BotStatus.wrong_password or
+                                      w.status == BotStatus.invalid_account)
+                    if not isBanned then
+                        log(string.format("Watchdog: Reconnecting worker (%s): %s", getBotStatusString(w.status), (w.name or "bot")))
+                        w:connect()
+                    end
                 end
             end)
         end
@@ -1219,7 +1283,7 @@ function main()
     log("Leveling worker started! Current Bot: " .. workerId, b)
 
     local initialAccount = CURRENT_ACCOUNT or b.name or "InitialAccount"
-    local initialOnline = ensureBotOnline(b, 60)
+    local initialOnline = ensureBotOnline(b)
     if initialOnline then
         local ok, err = pcall(function() runBotLeveling(b) end)
         local rem = getRemainingQueueCount()
