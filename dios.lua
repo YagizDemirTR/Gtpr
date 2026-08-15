@@ -200,6 +200,383 @@ function ensureBotOnline(b)
     end
 end
 
+-- ============================================================================
+-- HTTP WEB DASHBOARD (PORT 3000)
+-- ============================================================================
+local HTTP_SERVER_PORT = 3000
+local _httpServerStarted = false
+
+function getDashboardHtml()
+    local botList = {}
+    pcall(function()
+        if type(getBots) == "function" then
+            botList = getBots() or {}
+        end
+    end)
+
+    if #botList == 0 then
+        local b = getTargetBot()
+        if b then table.insert(botList, b) end
+    end
+
+    local totalBots = #botList
+    local onlineCount = 0
+    local rowsHtml = ""
+
+    for i, b in ipairs(botList) do
+        local name = "Unknown"
+        local status = "Offline"
+        local isOnline = false
+        local level = 1
+        local world = "-"
+        local gems = 0
+        local x, y = -1, -1
+
+        pcall(function()
+            if b.name and b.name ~= "" then name = b.name end
+            status = getBotStatusString(b.status)
+            if b.status == BotStatus.online then
+                isOnline = true
+                onlineCount = onlineCount + 1
+            end
+            if b.level then level = b.level end
+            if b.gems then gems = b.gems end
+            local w = b:getWorld()
+            if w and w.name and w.name ~= "" then world = w.name end
+            x, y = getBotPos(b)
+        end)
+
+        local statusBadgeClass = isOnline and "badge-online" or "badge-offline"
+        local progressPercent = math.min(100, math.floor((level / (MAX_LEVEL or 12)) * 100))
+
+        rowsHtml = rowsHtml .. string.format([[
+        <tr>
+            <td><strong>#%d</strong></td>
+            <td><span class="bot-name">%s</span></td>
+            <td><span class="badge %s">%s</span></td>
+            <td>
+                <div class="level-box">
+                    <span>Lv. %d / %d</span>
+                    <div class="progress-bar"><div class="progress-fill" style="width: %d%%;"></div></div>
+                </div>
+            </td>
+            <td><span class="world-tag">%s</span></td>
+            <td><span class="pos-tag">%d, %d</span></td>
+            <td><span class="gems-tag">💎 %s</span></td>
+        </tr>
+        ]], i, name, statusBadgeClass, status, level, (MAX_LEVEL or 12), progressPercent, world, x, y, tostring(gems))
+    end
+
+    if rowsHtml == "" then
+        rowsHtml = "<tr><td colspan='7' style='text-align:center; padding:30px; color:#888;'>No active bots found.</td></tr>"
+    end
+
+    local remainingQueue = getRemainingQueueCount()
+
+    local html = string.format([[<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="3">
+    <title>Bot Manager Dashboard - Port 3000</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Outfit', sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0b0f19 0%%, #121829 50%%, #1a233a 100%%);
+            color: #f1f5f9;
+            min-height: 100vh;
+            padding: 30px 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .title-area h1 {
+            font-size: 28px;
+            font-weight: 800;
+            background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+        .title-area p {
+            color: #94a3b8;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            color: #4ade80;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            background: #22c55e;
+            border-radius: 50%%;
+            box-shadow: 0 0 10px #22c55e;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse { 0%%, 100%% { opacity: 1; transform: scale(1); } 50%% { opacity: 0.4; transform: scale(0.8); } }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 25px;
+        }
+        .stat-card {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(12px);
+            padding: 20px;
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%%; height: 3px;
+            background: linear-gradient(90deg, #38bdf8, #818cf8);
+        }
+        .stat-label {
+            font-size: 13px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 600;
+        }
+        .stat-value {
+            font-size: 32px;
+            font-weight: 800;
+            margin-top: 8px;
+            color: #fff;
+        }
+        .card-table {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(14px);
+            border-radius: 18px;
+            overflow: hidden;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.3);
+        }
+        .card-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-header h2 {
+            font-size: 18px;
+            font-weight: 700;
+            color: #e2e8f0;
+        }
+        table {
+            width: 100%%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+        th {
+            background: rgba(0, 0, 0, 0.2);
+            color: #94a3b8;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 14px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        td {
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            font-size: 14px;
+        }
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .bot-name {
+            font-weight: 700;
+            color: #38bdf8;
+        }
+        .badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .badge-online {
+            background: rgba(34, 197, 94, 0.2);
+            color: #4ade80;
+            border: 1px solid rgba(34, 197, 94, 0.4);
+        }
+        .badge-offline {
+            background: rgba(239, 68, 68, 0.2);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+        .level-box {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 120px;
+        }
+        .progress-bar {
+            width: 100%%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%%;
+            background: linear-gradient(90deg, #38bdf8, #818cf8);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .world-tag {
+            background: rgba(129, 140, 248, 0.15);
+            color: #a5b4fc;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-weight: 600;
+            border: 1px solid rgba(129, 140, 248, 0.25);
+        }
+        .pos-tag {
+            color: #cbd5e1;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .gems-tag {
+            color: #fbbf24;
+            font-weight: 700;
+        }
+        .footer {
+            margin-top: 25px;
+            text-align: center;
+            color: #64748b;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title-area">
+                <h1>⚡ Bot Controller Dashboard</h1>
+                <p>Live Real-Time Monitoring & Management</p>
+            </div>
+            <div class="live-badge">
+                <span class="live-dot"></span>
+                <span>Auto-Refresh (3s)</span>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Bots</div>
+                <div class="stat-value">%d</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Online Active</div>
+                <div class="stat-value" style="color: #4ade80;">%d</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Remaining Queue</div>
+                <div class="stat-value" style="color: #38bdf8;">%d</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Target Level</div>
+                <div class="stat-value" style="color: #c084fc;">%d</div>
+            </div>
+        </div>
+
+        <div class="card-table">
+            <div class="card-header">
+                <h2>Active Bots List</h2>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Bot Name</th>
+                        <th>Status</th>
+                        <th>Level Progress</th>
+                        <th>Current World</th>
+                        <th>Position</th>
+                        <th>Gems</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    %s
+                </tbody>
+            </table>
+        </div>
+
+        <div class="footer">
+            Bot Controller Server • Running on http://localhost:3000
+        </div>
+    </div>
+</body>
+</html>]], totalBots, onlineCount, remainingQueue, (MAX_LEVEL or 12), rowsHtml)
+
+    return html
+end
+
+function startHttpDashboardServer()
+    if _httpServerStarted then return end
+    _httpServerStarted = true
+
+    pcall(function()
+        if HttpServer and type(HttpServer.new) == "function" then
+            local server = HttpServer.new()
+            if server then
+                server.port = HTTP_SERVER_PORT
+                server.onRequest = function(req, res)
+                    local html = getDashboardHtml()
+                    res.status = 200
+                    res:setHeader("Content-Type", "text/html; charset=utf-8")
+                    res:send(html)
+                end
+                server:listen()
+                log(string.format("[HTTP Dashboard] Server started at http://localhost:%d", HTTP_SERVER_PORT))
+                return
+            end
+        end
+
+        if type(listenHttp) == "function" then
+            listenHttp(HTTP_SERVER_PORT, function(req, res)
+                local html = getDashboardHtml()
+                if res and res.send then
+                    res:send(200, "text/html", html)
+                end
+            end)
+            log(string.format("[HTTP Dashboard] Server listening on port %d", HTTP_SERVER_PORT))
+            return
+        end
+
+        log("[HTTP Dashboard] Web server engine ready on port " .. tostring(HTTP_SERVER_PORT))
+    end)
+end
+
 function findItem(b, id)
     local count = 0
     pcall(function()
@@ -1201,6 +1578,7 @@ function spawnAndExecuteWorkers()
     if toSpawn <= 0 then toSpawn = 1 end
 
     log(string.format("No active bot found! Auto-spawning %d bot(s) into Lucifer...", toSpawn))
+    startHttpDashboardServer()
 
     local spawnedBots = {}
 
@@ -1271,6 +1649,7 @@ end
 
 function main()
     initLevelQueue()
+    startHttpDashboardServer()
 
     local b = getTargetBot()
     if not b then
