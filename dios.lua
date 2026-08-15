@@ -939,9 +939,15 @@ function serializeConfig(tbl)
 end
 
 function createBotInstance(account)
-    local payload = parseAccountPayload(account)
     local bot = nil
+    local plat = 0
+    pcall(function()
+        if Platform and Platform.windows ~= nil then
+            plat = Platform.windows
+        end
+    end)
 
+    local payload = parseAccountPayload(account)
     if payload then
         pcall(function() bot = addBot(payload) end)
     end
@@ -950,7 +956,7 @@ function createBotInstance(account)
         pcall(function()
             bot = addBot({
                 name = account,
-                platform = (Platform and Platform.windows) or 0,
+                platform = plat,
                 connect = false
             })
         end)
@@ -968,24 +974,11 @@ function createBotInstance(account)
     if not bot then
         local u, p = account:match("^([^:|]+)[:|](.+)$")
         if u and p then
-            pcall(function()
-                if Platform and Platform.windows then
-                    bot = addBot(u, p, "", "", Platform.windows)
-                else
-                    bot = addBot(u, p)
-                end
-            end)
+            pcall(function() bot = addBot(u, p, "", "", plat) end)
+            if not bot then pcall(function() bot = addBot(u, p) end) end
         else
-            pcall(function()
-                if Platform and Platform.windows then
-                    bot = addBot(account, "", "", "", Platform.windows)
-                else
-                    bot = addBot(account)
-                end
-            end)
-            if not bot then
-                pcall(function() bot = addBot(account) end)
-            end
+            pcall(function() bot = addBot(account, "", "", "", plat) end)
+            if not bot then pcall(function() bot = addBot(account) end) end
         end
     end
 
