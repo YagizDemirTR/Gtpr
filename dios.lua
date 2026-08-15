@@ -1598,8 +1598,6 @@ function spawnAndExecuteWorkers()
                 bot:connect()
             end)
 
-            sleep(1000)
-
             if fullScript ~= "" then
                 local workerScript = string.format("CURRENT_ACCOUNT = %q\n", account) .. fullScript
                 pcall(function()
@@ -1614,7 +1612,7 @@ function spawnAndExecuteWorkers()
             log(string.format("Failed to add bot for account: %s", account))
         end
 
-        sleep(1500)
+        sleep(100)
     end
 
     log(string.format("Auto-spawner launched %d bot workers! Watchdog active.", #spawnedBots))
@@ -1652,66 +1650,65 @@ function main()
     startHttpDashboardServer()
 
     local b = getTargetBot()
-    if not b then
-        log("No parent bot detected. Starting Auto-Spawner mode...")
-        spawnAndExecuteWorkers()
-        return
-    end
 
-    local workerId = b.name or "Bot"
-    log("Leveling worker started! Current Bot: " .. workerId, b)
+    -- If a bot is running this script as an assigned child worker
+    if CURRENT_ACCOUNT and CURRENT_ACCOUNT ~= "" then
+        local workerId = b and b.name or "Bot"
+        log("Assigned worker started for: " .. CURRENT_ACCOUNT, b)
 
-    local initialAccount = CURRENT_ACCOUNT or b.name or "InitialAccount"
-    local initialOnline = ensureBotOnline(b)
-    if initialOnline then
-        local ok, err = pcall(function() runBotLeveling(b) end)
-        local rem = getRemainingQueueCount()
-        if ok then
-            safeAppend(COMPLETED_FILE, initialAccount .. " (Completed by " .. workerId .. ")\n")
-            safeAppend(READY_FILE, initialAccount .. "\n")
-            sendReadyWebhook(initialAccount, b.name or workerId, rem)
-            log(string.format(">>> Initial Account %s reached Level %d & dropped seeds to storage!", initialAccount, MAX_LEVEL), b)
-        else
-            log("Initial leveling error: " .. tostring(err), b)
-            safeAppend(COMPLETED_FILE, initialAccount .. " (ERROR: " .. tostring(err) .. ")\n")
-        end
-    end
-
-    while true do
-        local account, remaining = claimNextAccount(workerId)
-
-        if not account then
-            log("No more accounts left in queue. All accounts completed!", b)
-            sendLogWebhook(string.format("[%s] Queue empty, all accounts leveled to %d!", workerId, MAX_LEVEL))
-            break
-        end
-
-        log("==================================================", b)
-        log(string.format(">>> [%s] CLAIMED ACCOUNT: %s (Remaining: %d)", workerId, account, remaining), b)
-        log("==================================================", b)
-        sendLogWebhook(string.format("[%s] Switching account: %s (Remaining: %d)", workerId, account, remaining))
-
-        local success = switchBotAccount(b, account)
-
-        if success then
+        local initialOnline = ensureBotOnline(b)
+        if initialOnline then
             local ok, err = pcall(function() runBotLeveling(b) end)
             local rem = getRemainingQueueCount()
             if ok then
-                safeAppend(COMPLETED_FILE, account .. " (Completed by " .. workerId .. ")\n")
-                safeAppend(READY_FILE, account .. "\n")
-                sendReadyWebhook(account, b.name or workerId, rem)
-                log(string.format(">>> Account %s reached Level %d & dropped seeds to storage!", account, MAX_LEVEL), b)
+                safeAppend(COMPLETED_FILE, CURRENT_ACCOUNT .. " (Completed by " .. workerId .. ")\n")
+                safeAppend(READY_FILE, CURRENT_ACCOUNT .. "\n")
+                sendReadyWebhook(CURRENT_ACCOUNT, b and b.name or workerId, rem)
+                log(string.format(">>> Account %s reached Level %d & dropped seeds to storage!", CURRENT_ACCOUNT, MAX_LEVEL), b)
             else
-                log(string.format(">>> Error during leveling for %s: %s", account, tostring(err)), b)
-                safeAppend(COMPLETED_FILE, account .. " (ERROR: " .. tostring(err) .. ")\n")
+                log("Initial leveling error: " .. tostring(err), b)
+                safeAppend(COMPLETED_FILE, CURRENT_ACCOUNT .. " (ERROR: " .. tostring(err) .. ")\n")
             end
-        else
-            log(string.format(">>> Account %s failed or banned (%s). Moving to next account...", account, getBotStatusString(b.status)), b)
-            safeAppend(COMPLETED_FILE, account .. " (FAILED: " .. getBotStatusString(b.status) .. ")\n")
         end
 
-        sleep(3000)
+        while true do
+            local account, remaining = claimNextAccount(workerId)
+            if not account then
+                log("No more accounts left in queue. Worker finished!", b)
+                break
+            end
+
+            log("==================================================", b)
+            log(string.format(">>> [%s] CLAIMED ACCOUNT: %s (Remaining: %d)", workerId, account, remaining), b)
+            log("==================================================", b)
+            sendLogWebhook(string.format("[%s] Switching account: %s (Remaining: %d)", workerId, account, remaining))
+
+            local success = switchBotAccount(b, account)
+            if success then
+                local ok, err = pcall(function() runBotLeveling(b) end)
+                local rem = getRemainingQueueCount()
+                if ok then
+                    safeAppend(COMPLETED_FILE, account .. " (Completed by " .. workerId .. ")\n")
+                    safeAppend(READY_FILE, account .. "\n")
+                    sendReadyWebhook(account, b and b.name or workerId, rem)
+                    log(string.format(">>> Account %s reached Level %d & dropped seeds to storage!", account, MAX_LEVEL), b)
+                else
+                    log(string.format(">>> Error during leveling for %s: %s", account, tostring(err)), b)
+                    safeAppend(COMPLETED_FILE, account .. " (ERROR: " .. tostring(err) .. ")\n")
+                end
+            else
+                log(string.format(">>> Account %s failed or banned (%s). Moving to next account...", account, getBotStatusString(b.status)), b)
+                safeAppend(COMPLETED_FILE, account .. " (FAILED: " .. getBotStatusString(b.status) .. ")\n")
+            end
+
+            sleep(3000)
+        end
+        return
     end
+
+    -- Controller / Master mode: Spawns MAX_CONCURRENT_BOTS workers
+    log("Master Controller started! Spawning workers up to MAX_CONCURRENT_BOTS (" .. tostring(MAX_CONCURRENT_BOTS or 4) .. ")...")
+    spawnAndExecuteWorkers()
 end
 
 main()
