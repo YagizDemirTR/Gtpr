@@ -940,6 +940,8 @@ end
 
 function createBotInstance(account)
     local bot = nil
+    local errLogs = {}
+
     local plat = 0
     pcall(function()
         if Platform and Platform.windows ~= nil then
@@ -949,47 +951,66 @@ function createBotInstance(account)
 
     local payload = parseAccountPayload(account)
     if payload then
-        pcall(function() bot = addBot(payload) end)
+        local ok, res = pcall(function() return addBot(payload) end)
+        if ok and res then return res end
+        table.insert(errLogs, "payload: " .. tostring(res))
     end
 
-    if not bot then
-        pcall(function()
-            bot = addBot({
-                name = account,
-                platform = plat,
-                connect = false
-            })
-        end)
-    end
+    local ok1, res1 = pcall(function()
+        return addBot({
+            name = account,
+            platform = plat,
+            connect = false
+        })
+    end)
+    if ok1 and res1 then return res1 end
+    table.insert(errLogs, "table_plat: " .. tostring(res1))
 
-    if not bot then
-        pcall(function()
-            bot = addBot({
-                name = account,
-                connect = false
-            })
-        end)
-    end
+    local ok2, res2 = pcall(function()
+        return addBot({
+            name = account,
+            connect = false
+        })
+    end)
+    if ok2 and res2 then return res2 end
+    table.insert(errLogs, "table_basic: " .. tostring(res2))
 
-    if not bot then
-        local u, p = account:match("^([^:|]+)[:|](.+)$")
-        if u and p then
-            pcall(function() bot = addBot(u, p, "", "", plat) end)
-            if not bot then pcall(function() bot = addBot(u, p) end) end
-        else
-            pcall(function() bot = addBot(account, "", "", "", plat) end)
-            if not bot then pcall(function() bot = addBot(account) end) end
-        end
-    end
+    local ok3, res3 = pcall(function()
+        return addBot(account)
+    end)
+    if ok3 and res3 then return res3 end
+    table.insert(errLogs, "string_single: " .. tostring(res3))
 
-    if not bot then
-        pcall(function() bot = getBot(account) end)
-    end
-    if not bot then
-        pcall(function() bot = getBot() end)
-    end
+    local ok4, res4 = pcall(function()
+        return addBot(account, "")
+    end)
+    if ok4 and res4 then return res4 end
+    table.insert(errLogs, "string_pair: " .. tostring(res4))
 
-    return bot
+    local ok5, res5 = pcall(function()
+        return addBot(account, "02:00:00:00:00:00", "rid")
+    end)
+    if ok5 and res5 then return res5 end
+    table.insert(errLogs, "string_mac_rid: " .. tostring(res5))
+
+    local ok6, res6 = pcall(function()
+        return addBot(account, "", "02:00:00:00:00:00", "rid", plat)
+    end)
+    if ok6 and res6 then return res6 end
+    table.insert(errLogs, "string_5args: " .. tostring(res6))
+
+    pcall(function() bot = getBot(account) end)
+    if bot then return bot end
+
+    pcall(function() bot = getBot(account:gsub("^@", "")) end)
+    if bot then return bot end
+
+    pcall(function() bot = getBot() end)
+    if bot then return bot end
+
+    log("addBot debug: " .. table.concat(errLogs, " | "))
+
+    return nil
 end
 
 function spawnAndExecuteWorkers()
