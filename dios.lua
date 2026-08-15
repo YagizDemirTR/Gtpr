@@ -119,6 +119,47 @@ function getBotStatusString(status)
     return tostring(status)
 end
 
+function ensureBotOnline(b, maxWaitSeconds)
+    if not b then return false end
+    maxWaitSeconds = maxWaitSeconds or 60
+    local lastStatus = nil
+
+    for second = 1, maxWaitSeconds do
+        local currentStatus = nil
+        pcall(function() currentStatus = b.status end)
+
+        if currentStatus ~= lastStatus then
+            lastStatus = currentStatus
+            local statusName = getBotStatusString(currentStatus)
+            log(string.format("Waiting for bot to be Online... Status: %s (%d/%ds)", statusName, second, maxWaitSeconds), b)
+        end
+
+        if currentStatus == BotStatus.online then
+            sleep(2000)
+            return true
+        end
+
+        if currentStatus == BotStatus.account_banned or
+           currentStatus == BotStatus.location_banned or
+           currentStatus == BotStatus.wrong_password or
+           currentStatus == BotStatus.account_restricted or
+           currentStatus == BotStatus.invalid_account then
+            log("Bot connection permanent error: " .. getBotStatusString(currentStatus), b)
+            return false
+        end
+
+        if second % 15 == 0 and currentStatus == BotStatus.offline then
+            pcall(function() b:connect() end)
+        end
+
+        sleep(1000)
+    end
+
+    local isOnline = false
+    pcall(function() isOnline = (b.status == BotStatus.online) end)
+    return isOnline
+end
+
 function findItem(b, id)
     local count = 0
     pcall(function()
@@ -376,6 +417,8 @@ end
 
 function clearUntilLevel7(b)
     while true do
+        if not ensureBotOnline(b, 30) then break end
+
         local botLevel = 1
         pcall(function() botLevel = b.level or 1 end)
         if botLevel >= 7 then break end
@@ -388,10 +431,12 @@ function clearUntilLevel7(b)
             local lvl = 1
             pcall(function() lvl = b.level or 1 end)
             if lvl < 7 then
-                local newWorld = generateRandomWorld()
-                log("Warping to new random world: " .. newWorld, b)
-                pcall(function() b:warp(newWorld) end)
-                sleep(math.random(4500, 7000))
+                if ensureBotOnline(b, 30) then
+                    local newWorld = generateRandomWorld()
+                    log("Warping to new random world: " .. newWorld, b)
+                    pcall(function() b:warp(newWorld) end)
+                    sleep(math.random(4500, 7000))
+                end
             end
         end
     end
@@ -854,16 +899,22 @@ function switchBotAccount(b, accountLine)
 end
 
 function runBotLeveling(b)
+    if not ensureBotOnline(b, 60) then
+        log("Bot is offline or not connected. Skipping leveling.", b)
+        return false
+    end
+
     local botLevel = 1
     pcall(function() botLevel = b.level or 1 end)
 
     if botLevel < 7 then
+        sleep(2500)
         if findItem(b, 9640) == 0 then
             log("Bot does not have 9640 in inventory. Skipping /home warp.", b)
         else
             log("Warping home (/home) to start tutorial...", b)
             pcall(function() b:say("/home") end)
-            sleep(3000)
+            sleep(4000)
         end
 
         local x, y = getLockTile(b)
@@ -872,7 +923,7 @@ function runBotLeveling(b)
             if findItem(b, 9640) > 0 then
                 local bx, by = getBotPos(b)
                 pcall(function() b:place(bx, by - 1, 9640) end)
-                sleep(1000)
+                sleep(1500)
 
                 x, y = getLockTile(b)
 
@@ -895,11 +946,13 @@ function runBotLeveling(b)
             local lvl = 1
             pcall(function() lvl = b.level or 1 end)
             if lvl < 7 then
-                local newWorld = generateRandomWorld()
-                log("Home world clean/done. Warping to new random world: " .. newWorld, b)
-                pcall(function() b:warp(newWorld) end)
-                sleep(math.random(4500, 7000))
-                clearUntilLevel7(b)
+                if ensureBotOnline(b, 30) then
+                    local newWorld = generateRandomWorld()
+                    log("Home world clean/done. Warping to new random world: " .. newWorld, b)
+                    pcall(function() b:warp(newWorld) end)
+                    sleep(math.random(4500, 7000))
+                    clearUntilLevel7(b)
+                end
             end
         elseif res ~= "LEVEL_7" then
             clearUntilLevel7(b)
@@ -907,6 +960,7 @@ function runBotLeveling(b)
     end
 
     startNativeRotationFarm(b)
+    return true
 end
 
 function getScriptSource()
@@ -1088,6 +1142,12 @@ function main()
 
     local workerId = b.name or "Bot"
     log("Leveling worker started! Current Bot: " .. workerId, b)
+
+    local initialOnline = ensureBotOnline(b, 60)
+    if initialOnline then
+        runBotLeveling(b)
+        safeAppend(COMPLETED_FILE, (b.name or "InitialAccount") .. " (Completed by " .. workerId .. ")\n")
+    end
 
     while true do
         local account, remaining = claimNextAccount(workerId)
